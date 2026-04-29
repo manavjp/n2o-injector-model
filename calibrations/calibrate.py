@@ -1,13 +1,14 @@
 import os
+import sys
 import json
 from datetime import datetime
-
 import numpy as np
 import matplotlib.pyplot as plt
-
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, os.path.join(REPO_ROOT, "python"))
 import inputs
 import model
-
 
 # ============================================================
 # CONSTANTS
@@ -15,18 +16,24 @@ import model
 PSI_TO_PA = model.PSI_TO_PA
 LB_TO_KG = model.LB_TO_KG
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 OUTPUT_DIR = os.path.join(REPO_ROOT, "outputs")
-CALIBRATION_DIR = os.path.join(REPO_ROOT, "calibrations")
+CALIBRATION_DIR = SCRIPT_DIR
+KAPPA_SWEEP_PLOT_NAME = "calibration_kappa_sweep.png"
+CURVES_PLOT_NAME      = "calibration_curves_at_best_kappa.png"
 
+KAPPA_MIN = 0.00001
+KAPPA_MAX = 0.18
+KAPPA_STEPS = 50
+
+# update after each new fire.
+MDOT_MEASURED_LB_S = 1.85   # measured average mdot during liquid-phase burn
+PASS_BAND_PCT = 15          # percent margin
 
 # ============================================================
 # CALIBRATION CORE
 # ============================================================
 def run_calibration(Cd, A_physical, P1, kappa_array, P2_min, N_points,
                     mdot_measured_kgs):
-    """Sweep kappa, run model at each, compute error vs measured."""
     sweep_results = []
 
     for kappa in kappa_array:
@@ -56,7 +63,6 @@ def run_calibration(Cd, A_physical, P1, kappa_array, P2_min, N_points,
 
 
 def find_best_kappa(sweep_results, pass_band_pct):
-    """Identify best-fit kappa and pass band."""
     abs_errors = [abs(r["error_pct"]) for r in sweep_results]
     best_idx = int(np.argmin(abs_errors))
     best = sweep_results[best_idx]
@@ -86,7 +92,6 @@ def print_summary(sweep_results, best, pass_band, passing,
 
     inj = inputs.INJECTOR
     op = inputs.OPERATING
-    cal = inputs.CALIBRATION
 
     print()
     print("CONFIGURATION")
@@ -100,10 +105,8 @@ def print_summary(sweep_results, best, pass_band, passing,
     print()
     print("HOT FIRE REFERENCE")
     print("-" * 72)
-    print(f"  Measured ṁ          {cal['mdot_measured_lb_s']:.3f} lb/s "
+    print(f"  Measured ṁ          {MDOT_MEASURED_LB_S:.3f} lb/s "
           f"({mdot_measured_kgs:.4f} kg/s)")
-    print(f"  Burn duration       {cal['burn_duration_s']} s (liquid phase)")
-    print(f"  Total ox consumed   {cal['total_ox_consumed_lb']} lb")
     print(f"  Pass band           ±{pass_band_pct}% per Waxman §IV.D")
 
     print()
@@ -112,16 +115,7 @@ def print_summary(sweep_results, best, pass_band, passing,
     print(f"  {'κ':<8}{'ṁ pred':>14}{'lb/s':>10}{'error':>11}{'P2/Psat':>11}  status")
     print(f"  {'-'*8:<8}{'-'*14:>14}{'-'*10:>10}{'-'*11:>11}{'-'*11:>11}")
 
-    # Print every Nth row to avoid wall of text, plus best
-    n = len(sweep_results)
-    stride = max(1, n // 15)
-    rows_to_print = set(range(0, n, stride))
-    rows_to_print.add(0)
-    rows_to_print.add(n - 1)
-    rows_to_print.add(sweep_results.index(best))
-
-    for i in sorted(rows_to_print):
-        r = sweep_results[i]
+    for r in sweep_results:
         status = "PASS" if abs(r["error_pct"]) <= pass_band_pct else "FAIL"
         marker = "  ← best" if r["kappa"] == best["kappa"] else ""
         print(f"  {r['kappa']:<8.4f}"
@@ -162,7 +156,7 @@ def print_summary(sweep_results, best, pass_band, passing,
     elif best["kappa"] == sweep_results[-1]["kappa"]:
         print()
         print(f"  ⚠ Best κ is at UPPER bound of sweep ({best['kappa']:.4f}).")
-        print(f"    True best may be even higher. Try widening kappa_max")
+        print(f"    True best may be even higher. Try widening KAPPA_MAX in calibrate.py")
 
     print()
     print("VALIDATION CHANNELS")
@@ -182,25 +176,20 @@ def save_calibration_json(sweep_results, best, pass_band,
                           mdot_measured_kgs, pass_band_pct, path):
     inj = inputs.INJECTOR
     op = inputs.OPERATING
-    cal = inputs.CALIBRATION
 
     out = {
         "timestamp": datetime.now().isoformat(),
         "calibration_id": f"{inj['name']}_calibration",
-        "single_fire_calibration": True,
-        "preliminary": True,
         "injector": dict(inj),
         "operating": dict(op),
         "hot_fire_reference": {
             "mdot_measured_kgs": float(mdot_measured_kgs),
-            "mdot_measured_lbs": float(cal["mdot_measured_lb_s"]),
-            "burn_duration_s": cal["burn_duration_s"],
-            "total_ox_consumed_lb": cal["total_ox_consumed_lb"],
+            "mdot_measured_lbs": float(MDOT_MEASURED_LB_S),
         },
         "calibration_config": {
-            "kappa_min": cal["kappa_min"],
-            "kappa_max": cal["kappa_max"],
-            "kappa_steps": cal["kappa_steps"],
+            "kappa_min": KAPPA_MIN,
+            "kappa_max": KAPPA_MAX,
+            "kappa_steps": KAPPA_STEPS,
             "pass_band_pct": pass_band_pct,
         },
         "best_fit": dict(best),
@@ -212,32 +201,10 @@ def save_calibration_json(sweep_results, best, pass_band,
                 inj["Cd_water"]
                 * (mdot_measured_kgs / best["mdot_predicted_kgs"])
             ),
-            "interpretation": (
-                "Multiplicative correction on water-derived Cd to match "
-                "measured two-phase N2O ṁ at this fire's operating point. "
-                "Apply forward to similar-geometry injectors via "
-                "predict_iteration.py."
-            ),
-            "single_fire_basis": True,
         },
-        "pass_band_kappa_range": (
-            list(pass_band) if pass_band else None
-        ),
         "validation_status": {
             "channel_1_avg_mdot": abs(best["error_pct"]) <= pass_band_pct,
             "channel_2_choke_ratio": 0.7 <= best["P2_crit_over_Psat"] <= 0.9,
-        },
-        "applicability": {
-            "l_over_d_at_calibration": inj["L_over_D"],
-            "recommended_l_over_d_range": [
-                inj["L_over_D"] * 0.8,
-                inj["L_over_D"] * 1.2,
-            ],
-            "note": (
-                "Single-fire calibration. Apply only to injectors with "
-                "similar L/D and edge condition. Recalibrate when geometry "
-                "regime changes."
-            ),
         },
         "sweep_results": sweep_results,
     }
@@ -333,7 +300,6 @@ def save_curves_at_best_kappa(best, mdot_measured_kgs, path):
     plt.close()
     print(f"  Calibrated curve: {path}")
 
-
 # ============================================================
 # RUN AS SCRIPT
 # ============================================================
@@ -342,17 +308,14 @@ if __name__ == "__main__":
     print("Validating inputs...")
     model.validate_inputs()
 
-    cal = inputs.CALIBRATION
-    pass_band_pct = cal["pass_band_pct"]
-    mdot_measured_kgs = cal["mdot_measured_lb_s"] * LB_TO_KG
+    pass_band_pct = PASS_BAND_PCT
+    mdot_measured_kgs = MDOT_MEASURED_LB_S * LB_TO_KG
 
     P1_pa = inputs.OPERATING["P1_psi"] * PSI_TO_PA
-    kappa_array = np.linspace(
-        cal["kappa_min"], cal["kappa_max"], cal["kappa_steps"]
-    )
+    kappa_array = np.linspace(KAPPA_MIN, KAPPA_MAX, KAPPA_STEPS)
 
-    print(f"Sweeping κ from {cal['kappa_min']} to {cal['kappa_max']} "
-          f"in {cal['kappa_steps']} steps...")
+    print(f"Sweeping κ from {KAPPA_MIN} to {KAPPA_MAX} "
+          f"in {KAPPA_STEPS} steps...")
 
     sweep_results = run_calibration(
         Cd=inputs.INJECTOR["Cd"],
@@ -380,11 +343,11 @@ if __name__ == "__main__":
     )
     save_kappa_sweep_plot(
         sweep_results, best, mdot_measured_kgs, pass_band_pct,
-        os.path.join(OUTPUT_DIR, inputs.OUTPUT_FILES["calibration_plot"]),
+        os.path.join(OUTPUT_DIR, KAPPA_SWEEP_PLOT_NAME),
     )
     save_curves_at_best_kappa(
         best, mdot_measured_kgs,
-        os.path.join(OUTPUT_DIR, inputs.OUTPUT_FILES["calibration_curves"]),
+        os.path.join(OUTPUT_DIR, CURVES_PLOT_NAME),
     )
     print()
     print("Done.")

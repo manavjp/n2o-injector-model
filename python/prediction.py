@@ -2,14 +2,11 @@ import os
 import json
 import math
 from datetime import datetime
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
 import inputs
 import model
-
 
 # ============================================================
 # CONSTANTS
@@ -17,24 +14,15 @@ import model
 PSI_TO_PA = model.PSI_TO_PA
 LB_TO_KG = model.LB_TO_KG
 FLUID = model.FLUID
-
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 OUTPUT_DIR = os.path.join(REPO_ROOT, "outputs")
 CALIBRATION_DIR = os.path.join(REPO_ROOT, "calibrations")
 
-
 # ============================================================
 # CORRECTION FACTOR RESOLUTION
 # ============================================================
 def resolve_correction_factor(apply_correction):
-    """
-    Return (factor, source_label).
-
-    Prefer the calibration JSON if present (authoritative, written by
-    calibrate.py). Fall back to inputs.EMPIRICAL_CORRECTIONS. If correction
-    is disabled, return 1.0.
-    """
     if not apply_correction:
         return 1.0, "disabled (apply_correction_factor=False)"
 
@@ -48,7 +36,7 @@ def resolve_correction_factor(apply_correction):
             factor = cal["empirical_corrections"]["Cd_correction_factor"]
             return float(factor), f"calibration JSON ({cal_path})"
         except (KeyError, json.JSONDecodeError):
-            pass  # fall through to inputs
+            pass  
 
     corr = getattr(inputs, "EMPIRICAL_CORRECTIONS", None)
     if corr is None:
@@ -57,7 +45,6 @@ def resolve_correction_factor(apply_correction):
             "neither calibration JSON nor inputs.EMPIRICAL_CORRECTIONS found."
         )
     return float(corr["Cd_correction_factor_HF2"]), "inputs.EMPIRICAL_CORRECTIONS"
-
 
 # ============================================================
 # INPUT VALIDATION
@@ -91,29 +78,20 @@ def validate_iteration_inputs():
             f"Pc_design_psi={Pc} >= P1_psi={P1_psi}; backflow regime."
         )
 
-
 # ============================================================
-# PER-N PREDICTION (compute curve once, scale by N×A_per_hole)
+# PER ORIFICE COUNT OPTIMIZATION
 # ============================================================
-# The P2 → ṁ curve shape depends only on upstream P1 and the fluid; Cd and A
-# scale ṁ linearly. So we run the model once at unit-Cd-A, then multiply.
-# This avoids ~34k redundant PropsSI calls for a 170-point N sweep.
-
 def build_unit_curve(P1_pa, Pc_design_psi):
-    """
-    Run model.run_model once at Cd=1, A=1. Return dict of per-P2 values
-    that can be scaled by (Cd × A) to get actual ṁ.
-    """
     result = model.run_model(
         Cd=1.0,
         A_physical=1.0,
         P1=P1_pa,
-        kappa_list=[inputs.KAPPA_PRIMARY],
+        kappa_list=[inputs.KAPPA],
         P2_min=inputs.SWEEP["P2_min_pa"],
         N_points=inputs.SWEEP["N_points"],
         Pc_design_psi=Pc_design_psi,
     )
-    op = result["operating_summary"][inputs.KAPPA_PRIMARY]
+    op = result["operating_summary"][inputs.KAPPA]
     return {
         "mdot_at_crit_per_CdA": op["mdot_at_crit_kgs"],
         "mdot_at_Pc_per_CdA":   op.get("mdot_at_design_Pc_kgs", float("nan")),
@@ -121,12 +99,7 @@ def build_unit_curve(P1_pa, Pc_design_psi):
         "is_choked_at_Pc":      Pc_design_psi < result["P2_crit_psi"],
     }
 
-
 def predict_for_N(N, D, Cd, unit_curve):
-    """
-    Scale the precomputed unit-curve by Cd × A = Cd × N × π/4 × D².
-    Constant time per N.
-    """
     A_per_hole = math.pi / 4 * D ** 2
     A_physical = N * A_per_hole
     CdA = Cd * A_physical
@@ -144,29 +117,19 @@ def predict_for_N(N, D, Cd, unit_curve):
         "is_choked_at_Pc":  unit_curve["is_choked_at_Pc"],
     }
 
-
 def sweep_N(N_array, D, Cd, unit_curve):
     return [predict_for_N(N, D, Cd, unit_curve) for N in N_array]
 
-
 # ============================================================
-# RECOMMENDATION (post-hoc lookup against the swept curve)
+# RECOMMENDATION
 # ============================================================
 def find_recommended_N(sweep, target_mdot_kgs):
-    """
-    Smallest N in the sweep whose predicted ṁ at design Pc meets or exceeds
-    the target. Returns None if no N in the sweep clears it.
-
-    Target is consulted ONLY here, against the already-computed curve.
-    Never enters the prediction math.
-    """
     if target_mdot_kgs is None:
         return None
     for row in sweep:
         if row["mdot_at_Pc_kgs"] >= target_mdot_kgs:
             return row
     return None
-
 
 # ============================================================
 # OUTPUT
@@ -178,7 +141,7 @@ def print_summary(sweep, D, Cd_water, factor, factor_source, Cd_effective,
 
     print()
     print("=" * 72)
-    print("ORIFICE-COUNT ITERATION")
+    print("ORIFICE COUNTS")
     print("=" * 72)
 
     print()
@@ -201,10 +164,9 @@ def print_summary(sweep, D, Cd_water, factor, factor_source, Cd_effective,
     else:
         print(f"  Target ṁ            (none specified — table only)")
 
-    # Current state
     if current_row is not None:
         print()
-        print("CURRENT STATE (selected injector's N)")
+        print("CURRENT STATE")
         print("-" * 72)
         print(f"  N                   {current_row['N']}")
         print(f"  A_physical          {current_row['A_physical_mm2']:.2f} mm²")
@@ -215,9 +177,8 @@ def print_summary(sweep, D, Cd_water, factor, factor_source, Cd_effective,
         regime = "CHOKED" if current_row["is_choked_at_Pc"] else "sub-critical"
         print(f"  Regime at Pc        {regime}")
 
-    # Sweep table — display every Nth row to keep print readable
     print()
-    print(f"N SWEEP ({len(sweep)} points; showing every 5th plus endpoints)")
+    print(f"N SWEEP ({len(sweep)} points)")
     print("-" * 72)
     print(f"  {'N':>5}{'A (mm²)':>11}{'ṁ at Pc (kg/s)':>18}"
           f"{'lb/s':>9}{'ṁ at choke':>13}{'lb/s':>9}{'regime':>14}")
@@ -225,20 +186,7 @@ def print_summary(sweep, D, Cd_water, factor, factor_source, Cd_effective,
           f"{'-'*13:>13}{'-'*9:>9}{'-'*14:>14}")
 
     n_rows = len(sweep)
-    rows_to_show = set(range(0, n_rows, 5))
-    rows_to_show.add(0)
-    rows_to_show.add(n_rows - 1)
-    if recommended is not None:
-        # include the recommended row in the printout
-        for i, r in enumerate(sweep):
-            if r["N"] == recommended["N"]:
-                rows_to_show.add(i)
-                break
-    if current_row is not None:
-        for i, r in enumerate(sweep):
-            if r["N"] == current_row["N"]:
-                rows_to_show.add(i)
-                break
+    rows_to_show = set(range(n_rows))
 
     for i in sorted(rows_to_show):
         r = sweep[i]
@@ -256,7 +204,6 @@ def print_summary(sweep, D, Cd_water, factor, factor_source, Cd_effective,
               f"{r['mdot_at_crit_lbs']:>9.3f}"
               f"{regime:>14}{marker}")
 
-    # Recommendation
     print()
     print("RECOMMENDATION")
     print("-" * 72)
@@ -282,6 +229,7 @@ def print_summary(sweep, D, Cd_water, factor, factor_source, Cd_effective,
             direction = "more" if delta > 0 else ("fewer" if delta < 0 else "same")
             print(f"  vs current N={current_row['N']}: "
                   f"{abs(delta)} {direction} hole(s)")
+        print()
 
 def save_csv(sweep, path):
     df = pd.DataFrame(sweep)
@@ -314,13 +262,11 @@ def save_plot(sweep, target_mdot_kgs, recommended, current_row,
     ax.plot(Ns, mdots_crit, "--", color="#C26A06", linewidth=1.4, alpha=0.7,
             label="ṁ at choke (HEM crit)")
 
-    # Target as horizontal reference line — never enters the math
     if target_mdot_kgs is not None:
         ax.axhline(target_mdot_kgs, color="#2ca02c", linestyle="--",
                    linewidth=1.6, alpha=0.8,
                    label=f"Target ({target_mdot_kgs:.4f} kg/s)")
 
-    # Recommended N — vertical drop and marker
     if recommended is not None:
         ax.axvline(recommended["N"], color="#2ca02c", linestyle=":",
                    alpha=0.5, linewidth=1.2)
@@ -329,14 +275,12 @@ def save_plot(sweep, target_mdot_kgs, recommended, current_row,
                    edgecolor="#1f5e1f", linewidth=1.3, zorder=10,
                    label=f"Recommended N={recommended['N']}")
 
-    # Current N marker
     if current_row is not None:
         ax.scatter([current_row["N"]], [current_row["mdot_at_Pc_kgs"]],
                    s=110, marker="o", color="#d62728",
                    edgecolor="#8b0000", linewidth=1.3, zorder=9,
                    label=f"Current N={current_row['N']}")
 
-    # Secondary y-axis: lb/s
     ax2 = ax.twinx()
     ymin, ymax = ax.get_ylim()
     ax2.set_ylim(ymin / LB_TO_KG, ymax / LB_TO_KG)
@@ -369,7 +313,6 @@ def save_plot(sweep, target_mdot_kgs, recommended, current_row,
     plt.close()
     print(f"  Plot: {path}")
 
-
 # ============================================================
 # RUN AS SCRIPT
 # ============================================================
@@ -381,7 +324,6 @@ if __name__ == "__main__":
     it = inputs.ITERATION
     inj = inputs.INJECTOR
 
-    # Resolve geometry & flow inputs
     D = it["fixed_diameter_m"] if it["fixed_diameter_m"] is not None else inj["D_m"]
     Cd_water = inj["Cd_water"]
     factor, factor_source = resolve_correction_factor(it["apply_correction_factor"])
@@ -390,23 +332,18 @@ if __name__ == "__main__":
     P1_pa = inputs.OPERATING["P1_psi"] * PSI_TO_PA
     Pc_psi = inputs.OPERATING["Pc_design_psi"]
 
-    # One model run at unit Cd*A; then scale per N
     print("Building unit P2 curve (one model run)...")
     unit_curve = build_unit_curve(P1_pa, Pc_psi)
 
-    # Sweep N
     N_array = np.arange(it["N_search_min"], it["N_search_max"] + 1)
     print(f"Sweeping N from {it['N_search_min']} to {it['N_search_max']} "
           f"({len(N_array)} points)...")
     sweep = sweep_N(N_array, D, Cd_effective, unit_curve)
 
-    # Current state (if selected injector has its own N and matches D)
     current_row = None
     if inj["N_holes"] is not None and abs(inj["D_m"] - D) < 1e-9:
-        # May be outside sweep range; compute directly
         current_row = predict_for_N(inj["N_holes"], D, Cd_effective, unit_curve)
 
-    # Recommendation — post-hoc lookup against the swept curve
     target = it["target_mdot_kgs"]
     recommended = find_recommended_N(sweep, target)
 

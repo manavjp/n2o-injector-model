@@ -1,14 +1,9 @@
 import os
-import json
-from datetime import datetime
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from CoolProp.CoolProp import PropsSI
-
 import inputs
-
 
 # ============================================================
 # CONSTANTS
@@ -16,11 +11,9 @@ import inputs
 FLUID = "NitrousOxide"
 PSI_TO_PA = 6894.76
 LB_TO_KG = 0.453592
-
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 OUTPUT_DIR = os.path.join(REPO_ROOT, "outputs")
-
 
 # ============================================================
 # INPUT VALIDATION
@@ -30,7 +23,7 @@ def validate_inputs():
     Cd = inputs.INJECTOR["Cd"]
     A = inputs.INJECTOR["A_physical"]
     P1_psi = inputs.OPERATING["P1_psi"]
-    kappa_list = inputs.KAPPA_SWEEP
+    kappa = inputs.KAPPA
 
     if not (0 < Cd <= 1.0):
         errors.append(f"Cd={Cd} outside (0, 1]")
@@ -40,8 +33,8 @@ def validate_inputs():
         errors.append(f"A_physical={A} must be positive")
     if P1_psi <= 14.7:
         errors.append(f"P1_psi={P1_psi} must be above ambient")
-    if any(k < 0 for k in kappa_list):
-        errors.append(f"All kappa values must be non-negative: {kappa_list}")
+    if kappa < 0:
+        errors.append(f"KAPPA must be non-negative: {kappa}")
 
     Pc = inputs.OPERATING.get("Pc_design_psi")
     if Pc is not None:
@@ -62,7 +55,6 @@ def validate_inputs():
         for w in warnings:
             print(f"    ⚠ {w}")
 
-
 # ============================================================
 # THERMODYNAMIC STATE
 # ============================================================
@@ -75,7 +67,6 @@ def saturated_upstream(P1):
         "P_sat": P1,
     }
 
-
 def downstream_isentropic(P2, s1):
     return {
         "h2":   PropsSI("H", "P", P2, "S", s1, FLUID),
@@ -83,39 +74,32 @@ def downstream_isentropic(P2, s1):
         "x2":   PropsSI("Q", "P", P2, "S", s1, FLUID),
     }
 
-
 # ============================================================
 # FLOW MODELS
 # ============================================================
 def mdot_SPI(Cd, A, rho_L, dP):
     return Cd * A * np.sqrt(2 * rho_L * dP)
 
-
 def mdot_HEM(Cd, A, rho2, h1, h2):
     return Cd * A * rho2 * np.sqrt(2 * (h1 - h2))
-
 
 def mdot_NHNE(m_spi, m_hem, kappa):
     w_spi = kappa / (1 + kappa)
     w_hem = 1.0 / (1 + kappa)
     return w_spi * m_spi + w_hem * m_hem
 
-
 # ============================================================
 # CHOKE DETECTION
 # ============================================================
 def find_critical_point(mdot_hem_curve, P2_array):
-    """Critical point = maximum of HEM curve."""
     idx = int(np.argmax(mdot_hem_curve))
     return idx, P2_array[idx], mdot_hem_curve[idx]
 
 
 def clamp_hem_subcritical(mdot_hem_curve, crit_idx, mdot_crit, P2_array):
-    """HEM clamped at critical for P2 < P2_crit."""
     clamped = mdot_hem_curve.copy()
     clamped[:crit_idx] = mdot_crit
     return clamped
-
 
 # ============================================================
 # MAIN MODEL RUN
@@ -139,20 +123,16 @@ def run_model(Cd, A_physical, P1, kappa_list, P2_min, N_points,
             Cd, A_physical, ds["rho2"], upstream["h1"], ds["h2"]
         )
 
-    # critical point from HEM peak
     crit_idx, P2_crit, mdot_crit = find_critical_point(mdot_hem_raw, P2_array)
 
-    # clamp HEM in subcritical
     mdot_hem = clamp_hem_subcritical(mdot_hem_raw, crit_idx, mdot_crit, P2_array)
 
-    # (Pc from inputs)
     if Pc_design_psi is not None:
         Pc_design_pa = Pc_design_psi * PSI_TO_PA
         idx_design = int(np.argmin(np.abs(P2_array - Pc_design_pa)))
     else:
         idx_design = None
 
-    # NHNE per kappa (uses clamped HEM)
     nhne_curves = {}
     operating_summary = {}
     for kappa in kappa_list:
@@ -190,38 +170,13 @@ def run_model(Cd, A_physical, P1, kappa_list, P2_min, N_points,
         "idx_design": idx_design,
     }
 
-
-# ============================================================
-# SANITY CHECKS
-# ============================================================
-def sanity_checks(results, kappa_primary):
-    checks = []
-    primary = results["operating_summary"][kappa_primary]
-    crit_idx = results["crit_idx"]
-
-    spi_at_crit = float(results["mdot_spi"][crit_idx])
-    hem_at_crit = float(results["mdot_hem"][crit_idx])
-    if hem_at_crit <= primary["mdot_at_crit_kgs"] <= spi_at_crit:
-        checks.append(("NHNE within SPI/HEM bounds at critical", "PASS"))
-    else:
-        checks.append(("NHNE within SPI/HEM bounds at critical", "FAIL"))
-
-    ratio = results["P2_crit_over_Psat"]
-    if 0.7 <= ratio <= 0.9:
-        checks.append((f"Critical P2/Psat={ratio:.3f}", "PASS"))
-    else:
-        checks.append((f"Critical P2/Psat={ratio:.3f}", "OUTSIDE 0.7–0.9"))
-
-    return checks
-
-
 # ============================================================
 # OUTPUTS
 # ============================================================
 def print_summary(results, kappa_primary):
     print()
     print("=" * 72)
-    print("N2O INJECTOR MASS FLOW MODEL")
+    print("N2O MODEL")
     print("=" * 72)
     inj = inputs.INJECTOR
     op = inputs.OPERATING
@@ -234,8 +189,7 @@ def print_summary(results, kappa_primary):
     print(f"  Cd                  {inj['Cd']:.4f}")
     print(f"  A_physical          {inj['A_physical']*1e6:.2f} mm²")
     print(f"  L/D                 {inj['L_over_D']:.2f}")
-    print(f"  κ sweep             {inputs.KAPPA_SWEEP}")
-    print(f"  κ primary           {kappa_primary}")
+    print(f"  κ                   {inputs.KAPPA}")
     print(f"  P₁ (manifold)       {op['P1_psi']:.0f} psi  ({op['P1_psi']*PSI_TO_PA/1e6:.3f} MPa)")
     print(f"  T₁ (sat)            {upstream['T1']:.2f} K  ({upstream['T1']-273.15:.1f} °C)")
     print(f"  ρ_L (sat)           {upstream['rho_L']:.1f} kg/m³")
@@ -246,16 +200,14 @@ def print_summary(results, kappa_primary):
         Cd_water = inj["Cd_water"]
         Cd_2phase_ref = Cd_water * factor
         print()
-        print("CD REFERENCE (model uses Cd_water; not applied to curves)")
+        print("Discharge Coefficient")
         print("-" * 72)
-        print(f"  Cd_water                {Cd_water:.4f}")
-        print(f"  Cd correction factor    {factor:.4f}  (HF2-derived)")
-        print(f"  Cd_2phase (reference)   {Cd_2phase_ref:.4f}")
-        print(f"  Note: preliminary, single-fire derived. "
-              f"Multiply ṁ by {factor:.3f} to scale.")
+        print(f"  Cd_water                 {Cd_water:.4f}")
+        print(f"  Cd correction multiplier {factor:.4f}")
+        print(f"  Cd_2phase                {Cd_2phase_ref:.4f}")
 
     print()
-    print("CRITICAL POINT (from HEM peak)")
+    print("CRITICAL POINT")
     print("-" * 72)
     print(f"  P₂_crit             {results['P2_crit_psi']:.1f} psi")
     print(f"  ΔP_crit             {results['dP_crit_psi']:.1f} psi")
@@ -263,7 +215,6 @@ def print_summary(results, kappa_primary):
     print(f"  ṁ_crit_HEM          {results['mdot_crit_HEM_kgs']:.4f} kg/s  "
           f"({results['mdot_crit_HEM_kgs']/LB_TO_KG:.3f} lb/s)")
 
-    # Design operating point block
     if results["Pc_design_psi"] is not None:
         Pc = results["Pc_design_psi"]
         dP_design = op["P1_psi"] - Pc
@@ -276,50 +227,22 @@ def print_summary(results, kappa_primary):
         regime = "CHOKED" if is_choked else "sub-critical"
         print(f"  Operating regime    {regime}")
         if is_choked:
-            print(f"  → ṁ insensitive to Pc; predicted ṁ ≈ ṁ_crit_HEM")
+            print(f"  Note: ṁ insensitive to Pc")
         else:
-            print(f"  → ṁ depends on Pc; see per-κ values below")
+            print(f"  Note: ṁ depends on Pc")
 
     print()
-    if results["Pc_design_psi"] is not None:
-        print("OPERATING ṁ BY κ (at critical / at design Pc / at ambient)")
-        print("-" * 72)
-        print(f"  {'κ':<6}{'ṁ at crit':>14}{'lb/s':>10}"
-              f"{'ṁ at Pc':>14}{'lb/s':>10}"
-              f"{'ṁ at amb':>14}{'lb/s':>10}")
-        print(f"  {'-'*6:<6}{'-'*14:>14}{'-'*10:>10}"
-              f"{'-'*14:>14}{'-'*10:>10}"
-              f"{'-'*14:>14}{'-'*10:>10}")
-        for kappa, c in results["operating_summary"].items():
-            marker = "  ← primary" if kappa == kappa_primary else ""
-            print(f"  {kappa:<6.2f}"
-                  f"{c['mdot_at_crit_kgs']:>11.4f} kg/s"
-                  f"{c['mdot_at_crit_lbs']:>10.3f}"
-                  f"{c['mdot_at_design_Pc_kgs']:>11.4f} kg/s"
-                  f"{c['mdot_at_design_Pc_lbs']:>10.3f}"
-                  f"{c['mdot_at_ambient_kgs']:>11.4f} kg/s"
-                  f"{c['mdot_at_ambient_lbs']:>10.3f}{marker}")
-    else:
-        print("OPERATING ṁ BY κ (at critical / at ambient)")
-        print("-" * 72)
-        print(f"  {'κ':<6}{'ṁ at crit':>14}{'lb/s':>10}{'ṁ at ambient':>16}{'lb/s':>10}")
-        print(f"  {'-'*6:<6}{'-'*14:>14}{'-'*10:>10}{'-'*16:>16}{'-'*10:>10}")
-        for kappa, c in results["operating_summary"].items():
-            marker = "  ← primary" if kappa == kappa_primary else ""
-            print(f"  {kappa:<6.2f}"
-                  f"{c['mdot_at_crit_kgs']:>11.4f} kg/s"
-                  f"{c['mdot_at_crit_lbs']:>10.3f}"
-                  f"{c['mdot_at_ambient_kgs']:>13.4f} kg/s"
-                  f"{c['mdot_at_ambient_lbs']:>10.3f}{marker}")
-
-    print()
-    print("SANITY CHECKS")
+    print("OPERATING ṁ")
     print("-" * 72)
-    for label, status in sanity_checks(results, kappa_primary):
-        marker = "✓" if "PASS" in status else "⚠"
-        print(f"  {marker} {label:<48} {status}")
+    c = results["operating_summary"][kappa_primary]
+    print(f"  ṁ at choke          {c['mdot_at_crit_kgs']:.4f} kg/s "
+          f"({c['mdot_at_crit_lbs']:.3f} lb/s)")
+    if results["Pc_design_psi"] is not None:
+        print(f"  ṁ at Pc design      {c['mdot_at_design_Pc_kgs']:.4f} kg/s "
+              f"({c['mdot_at_design_Pc_lbs']:.3f} lb/s)")
+    print(f"  ṁ at ambient        {c['mdot_at_ambient_kgs']:.4f} kg/s "
+          f"({c['mdot_at_ambient_lbs']:.3f} lb/s)")
     print()
-
 
 def save_csv(results, path):
     df = pd.DataFrame({
@@ -335,7 +258,6 @@ def save_csv(results, path):
         df[f"mdot_NHNE_k{kappa:.2f}_kg_s"] = curve
     df.to_csv(path, index=False)
     print(f"  CSV:      {path}")
-
 
 def save_plot(results, kappa_primary, path):
     plt.rcParams.update({
@@ -356,25 +278,15 @@ def save_plot(results, kappa_primary, path):
     dp_psi = results["dP_array"] / PSI_TO_PA
 
     ax.plot(dp_psi, results["mdot_spi"], "--",
-            color="#224a8b", linewidth=1.0, alpha=0.7,
+            color="#296bd5", linewidth=1.0, alpha=0.7,
             label="1 PHASE (SPI)")
     ax.plot(dp_psi, results["mdot_hem"], "--",
             color="#C26A06", linewidth=1.0, alpha=0.7,
             label="2 PHASE (HEM)")
 
-    cmap = plt.cm.viridis
-    n_kappa = len(results["nhne_curves"])
-    for i, (kappa, curve) in enumerate(results["nhne_curves"].items()):
-        is_primary = (kappa == kappa_primary)
-        color = cmap(0.15 + 0.7 * i / max(n_kappa - 1, 1))
-        ax.plot(
-            dp_psi, curve,
-            color=color,
-            linewidth=2.8 if is_primary else 1.3,
-            alpha=1.0 if is_primary else 0.55,
-            label=f"NHNE κ={kappa:.2f}" + ("  ← primary" if is_primary else ""),
-            zorder=3 if is_primary else 2,
-        )
+    nhne = results["nhne_curves"][kappa_primary]
+    ax.plot(dp_psi, nhne, "-", color="#942df4", linewidth=2.8,
+            label=f"NHNE κ={kappa_primary:.2f}", zorder=3)
 
     ax.axvline(results["dP_crit_psi"], color="#d62728",
                linestyle=":", alpha=0.4, linewidth=1.2)
@@ -400,7 +312,7 @@ def save_plot(results, kappa_primary, path):
             [dP_design], [mdot_at_design],
             s=90, marker="o", color="#2ca02c",
             edgecolor="#1f5e1f", linewidth=1.3, zorder=9,
-            label=f"HRAP Pc={Pc:.0f} psi ({mdot_at_design:.3f} kg/s)",
+            label=f"Target Pc={Pc:.0f} psi ({mdot_at_design:.3f} kg/s)",
         )
 
     ax2 = ax.twinx()
@@ -442,48 +354,6 @@ def save_plot(results, kappa_primary, path):
     plt.close()
     print(f"  Plot:     {path}")
 
-
-def save_metadata(results, kappa_primary, path):
-    meta = {
-        "timestamp": datetime.now().isoformat(),
-        "model_version": "1.2",
-        "weighting": "Solomon Eq. 2.21 (corrected from Dyer 2007)",
-        "choke_definition": "Waxman Eq. 5: HEM peak (∂ṁ_HEM/∂P2 = 0)",
-        "fluid": FLUID,
-        "inputs": {
-            "injector": inputs.INJECTOR,
-            "operating": inputs.OPERATING,
-            "kappa_sweep": inputs.KAPPA_SWEEP,
-            "kappa_primary": kappa_primary,
-            "sweep": inputs.SWEEP,
-            "empirical_corrections": getattr(inputs, "EMPIRICAL_CORRECTIONS", None),
-        },
-        "upstream_state": {
-            k: float(v) for k, v in results["upstream"].items()
-        },
-        "critical_point": {
-            "P2_crit_psi": results["P2_crit_psi"],
-            "dP_crit_psi": results["dP_crit_psi"],
-            "P2_crit_over_Psat": results["P2_crit_over_Psat"],
-            "mdot_crit_HEM_kgs": results["mdot_crit_HEM_kgs"],
-        },
-        "design_operating_point": (
-            {
-                "Pc_design_psi": results["Pc_design_psi"],
-                "dP_design_psi": inputs.OPERATING["P1_psi"] - results["Pc_design_psi"],
-                "is_choked": results["Pc_design_psi"] < results["P2_crit_psi"],
-            }
-            if results["Pc_design_psi"] is not None else None
-        ),
-        "operating_summary": {
-            f"k_{k:.2f}": v for k, v in results["operating_summary"].items()
-        },
-    }
-    with open(path, "w") as f:
-        json.dump(meta, f, indent=2)
-    print(f"  Metadata: {path}")
-
-
 # ============================================================
 # RUN
 # ============================================================
@@ -499,22 +369,18 @@ if __name__ == "__main__":
         Cd=inputs.INJECTOR["Cd"],
         A_physical=inputs.INJECTOR["A_physical"],
         P1=P1_pa,
-        kappa_list=inputs.KAPPA_SWEEP,
+        kappa_list=[inputs.KAPPA],
         P2_min=inputs.SWEEP["P2_min_pa"],
         N_points=inputs.SWEEP["N_points"],
         Pc_design_psi=Pc_design_psi,
     )
 
-    print_summary(results, inputs.KAPPA_PRIMARY)
+    print_summary(results, inputs.KAPPA)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     print("Outputs")
     print("-" * 72)
     save_csv(results, os.path.join(OUTPUT_DIR, inputs.OUTPUT_FILES["csv"]))
-    save_plot(results, inputs.KAPPA_PRIMARY,
+    save_plot(results, inputs.KAPPA,
               os.path.join(OUTPUT_DIR, inputs.OUTPUT_FILES["plot"]))
-    save_metadata(results, inputs.KAPPA_PRIMARY,
-                  os.path.join(OUTPUT_DIR, inputs.OUTPUT_FILES["metadata"]))
-    print()
-    print("Done.")
     print()
