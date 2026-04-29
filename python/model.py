@@ -105,13 +105,13 @@ def mdot_NHNE(m_spi, m_hem, kappa):
 # CHOKE DETECTION
 # ============================================================
 def find_critical_point(mdot_hem_curve, P2_array):
-    """Critical point = maximum of HEM curve (Waxman Eq. 5)."""
+    """Critical point = maximum of HEM curve."""
     idx = int(np.argmax(mdot_hem_curve))
     return idx, P2_array[idx], mdot_hem_curve[idx]
 
 
 def clamp_hem_subcritical(mdot_hem_curve, crit_idx, mdot_crit, P2_array):
-    """HEM clamped at critical for P2 < P2_crit (real injectors stay choked)."""
+    """HEM clamped at critical for P2 < P2_crit."""
     clamped = mdot_hem_curve.copy()
     clamped[:crit_idx] = mdot_crit
     return clamped
@@ -139,13 +139,13 @@ def run_model(Cd, A_physical, P1, kappa_list, P2_min, N_points,
             Cd, A_physical, ds["rho2"], upstream["h1"], ds["h2"]
         )
 
-    # Critical point from HEM peak
+    # critical point from HEM peak
     crit_idx, P2_crit, mdot_crit = find_critical_point(mdot_hem_raw, P2_array)
 
-    # Clamp HEM in subcritical region
+    # clamp HEM in subcritical
     mdot_hem = clamp_hem_subcritical(mdot_hem_raw, crit_idx, mdot_crit, P2_array)
 
-    # Optional design operating point (Pc from inputs)
+    # (Pc from inputs)
     if Pc_design_psi is not None:
         Pc_design_pa = Pc_design_psi * PSI_TO_PA
         idx_design = int(np.argmin(np.abs(P2_array - Pc_design_pa)))
@@ -208,7 +208,7 @@ def sanity_checks(results, kappa_primary):
 
     ratio = results["P2_crit_over_Psat"]
     if 0.7 <= ratio <= 0.9:
-        checks.append((f"Critical P2/Psat={ratio:.3f}", "PASS (Waxman ~0.8)"))
+        checks.append((f"Critical P2/Psat={ratio:.3f}", "PASS"))
     else:
         checks.append((f"Critical P2/Psat={ratio:.3f}", "OUTSIDE 0.7–0.9"))
 
@@ -239,6 +239,20 @@ def print_summary(results, kappa_primary):
     print(f"  P₁ (manifold)       {op['P1_psi']:.0f} psi  ({op['P1_psi']*PSI_TO_PA/1e6:.3f} MPa)")
     print(f"  T₁ (sat)            {upstream['T1']:.2f} K  ({upstream['T1']-273.15:.1f} °C)")
     print(f"  ρ_L (sat)           {upstream['rho_L']:.1f} kg/m³")
+
+    corr = getattr(inputs, "EMPIRICAL_CORRECTIONS", None)
+    if corr is not None and inj.get("Cd_water") is not None:
+        factor = corr["Cd_correction_factor_HF2"]
+        Cd_water = inj["Cd_water"]
+        Cd_2phase_ref = Cd_water * factor
+        print()
+        print("CD REFERENCE (model uses Cd_water; not applied to curves)")
+        print("-" * 72)
+        print(f"  Cd_water                {Cd_water:.4f}")
+        print(f"  Cd correction factor    {factor:.4f}  (HF2-derived)")
+        print(f"  Cd_2phase (reference)   {Cd_2phase_ref:.4f}")
+        print(f"  Note: preliminary, single-fire derived. "
+              f"Multiply ṁ by {factor:.3f} to scale.")
 
     print()
     print("CRITICAL POINT (from HEM peak)")
@@ -341,7 +355,6 @@ def save_plot(results, kappa_primary, path):
 
     dp_psi = results["dP_array"] / PSI_TO_PA
 
-    # SPI/HEM bounds — light, in the background
     ax.plot(dp_psi, results["mdot_spi"], "--",
             color="#224a8b", linewidth=1.0, alpha=0.7,
             label="1 PHASE (SPI)")
@@ -349,7 +362,6 @@ def save_plot(results, kappa_primary, path):
             color="#C26A06", linewidth=1.0, alpha=0.7,
             label="2 PHASE (HEM)")
 
-    # NHNE curves: primary bold, others faded
     cmap = plt.cm.viridis
     n_kappa = len(results["nhne_curves"])
     for i, (kappa, curve) in enumerate(results["nhne_curves"].items()):
@@ -364,7 +376,6 @@ def save_plot(results, kappa_primary, path):
             zorder=3 if is_primary else 2,
         )
 
-    # Critical (choke) marker
     ax.axvline(results["dP_crit_psi"], color="#d62728",
                linestyle=":", alpha=0.4, linewidth=1.2)
     ax.scatter(
@@ -376,7 +387,6 @@ def save_plot(results, kappa_primary, path):
               f"@ ΔP={results['dP_crit_psi']:.0f} psi)",
     )
 
-    # Design Pc reference line + marker
     if results["Pc_design_psi"] is not None:
         Pc = results["Pc_design_psi"]
         dP_design = inputs.OPERATING["P1_psi"] - Pc
@@ -393,7 +403,6 @@ def save_plot(results, kappa_primary, path):
             label=f"HRAP Pc={Pc:.0f} psi ({mdot_at_design:.3f} kg/s)",
         )
 
-    # Secondary y-axis: lb/s
     ax2 = ax.twinx()
     ymin, ymax = ax.get_ylim()
     ax2.set_ylim(ymin / LB_TO_KG, ymax / LB_TO_KG)
@@ -402,11 +411,9 @@ def save_plot(results, kappa_primary, path):
     ax2.spines["top"].set_visible(False)
     ax2.grid(False)
 
-    # Labels
-    ax.set_xlabel("ΔP across injector (psi)")
-    ax.set_ylabel("ṁ (kg/s)")
+    ax.set_xlabel("Injector ΔP (psi)")
+    ax.set_ylabel("mdot (kg/s)")
 
-    # Two-line title
     inj = inputs.INJECTOR
     op = inputs.OPERATING
     upstream = results["upstream"]
@@ -449,6 +456,7 @@ def save_metadata(results, kappa_primary, path):
             "kappa_sweep": inputs.KAPPA_SWEEP,
             "kappa_primary": kappa_primary,
             "sweep": inputs.SWEEP,
+            "empirical_corrections": getattr(inputs, "EMPIRICAL_CORRECTIONS", None),
         },
         "upstream_state": {
             k: float(v) for k, v in results["upstream"].items()
@@ -477,7 +485,7 @@ def save_metadata(results, kappa_primary, path):
 
 
 # ============================================================
-# RUN AS SCRIPT
+# RUN
 # ============================================================
 if __name__ == "__main__":
     print()

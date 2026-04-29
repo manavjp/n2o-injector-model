@@ -146,16 +146,23 @@ def print_summary(sweep_results, best, pass_band, passing,
         print(f"  ⚠ No κ within ±{pass_band_pct}% — model cannot match this fire")
         print(f"    Closest is κ = {best['kappa']:.4f} at {best['error_pct']:+.2f}%")
 
-    # Flag if best κ is at sweep boundary (asymptotic behavior likely)
+    factor = mdot_measured_kgs / best["mdot_predicted_kgs"]
+    Cd_2phase = inj["Cd_water"] * factor
+    print()
+    print("DERIVED 2-PHASE CD")
+    print("-" * 72)
+    print(f"  Cd correction factor   {factor:.4f}")
+    print(f"  Cd_2phase              {Cd_2phase:.4f}  "
+          f"(= Cd_water {inj['Cd_water']:.4f} × {factor:.4f})")
+
     if best["kappa"] == sweep_results[0]["kappa"]:
         print()
         print(f"  ⚠ Best κ is at LOWER bound of sweep ({best['kappa']:.4f}).")
-        print(f"    Model is asymptotic to pure HEM at κ → 0; lowering kappa_min")
-        print(f"    won't change the answer meaningfully. Treat as 'pure HEM' regime.")
+        print(f"    Treat as 'pure HEM' regime.")
     elif best["kappa"] == sweep_results[-1]["kappa"]:
         print()
         print(f"  ⚠ Best κ is at UPPER bound of sweep ({best['kappa']:.4f}).")
-        print(f"    True best may be even higher. Try widening kappa_max in inputs.py.")
+        print(f"    True best may be even higher. Try widening kappa_max")
 
     print()
     print("VALIDATION CHANNELS")
@@ -169,25 +176,6 @@ def print_summary(sweep_results, best, pass_band, passing,
     ch2 = 0.7 <= ratio <= 0.9
     print(f"  {'✓ PASS' if ch2 else '⚠ CHECK'}  Channel 2 — Choke ratio P2/P_sat")
     print(f"           predicted {ratio:.3f}, Waxman expected ~0.80")
-
-    print()
-    print("LIMITATIONS")
-    print("-" * 72)
-    print(f"  This calibration is based on ONE hot fire (HF2).")
-    print(f"  κ = {best['kappa']:.4f} is empirically tuned to that single point.")
-    print(f"  Treat as preliminary until additional fires validate the regime.")
-    print(f"  Apply this κ only to injectors with similar L/D "
-          f"(±20% of {inj['L_over_D']:.2f}).")
-    print(f"  Recalibrate when: L/D changes meaningfully, edge condition")
-    print(f"  changes, or operating regime differs.")
-
-    print()
-    print("NEXT STEP")
-    print("-" * 72)
-    print(f"  Update inputs.py:")
-    print(f"      KAPPA_PRIMARY = {best['kappa']:.4f}")
-    print(f"  Then run: python model.py")
-    print()
 
 
 def save_calibration_json(sweep_results, best, pass_band,
@@ -216,6 +204,22 @@ def save_calibration_json(sweep_results, best, pass_band,
             "pass_band_pct": pass_band_pct,
         },
         "best_fit": dict(best),
+        "empirical_corrections": {
+            "Cd_correction_factor": float(
+                mdot_measured_kgs / best["mdot_predicted_kgs"]
+            ),
+            "Cd_2phase_calibrated": float(
+                inj["Cd_water"]
+                * (mdot_measured_kgs / best["mdot_predicted_kgs"])
+            ),
+            "interpretation": (
+                "Multiplicative correction on water-derived Cd to match "
+                "measured two-phase N2O ṁ at this fire's operating point. "
+                "Apply forward to similar-geometry injectors via "
+                "predict_iteration.py."
+            ),
+            "single_fire_basis": True,
+        },
         "pass_band_kappa_range": (
             list(pass_band) if pass_band else None
         ),
