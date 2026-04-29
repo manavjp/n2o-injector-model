@@ -11,4 +11,4 @@ To predict N2O injector properties from water flow test data and injector geomet
 * `outputs/` → Generated graphs and CSV data
 * `docs/` → Reference literature
 
-Edit `inputs.py` to configure model. Execute `model.py` and `prediction.py`. Outputs are saved in `outputs/`.
+Edit `inputs.py` to configure variables. Run `model.py` and `prediction.py`. Outputs are saved in `outputs/`.
