@@ -145,17 +145,16 @@ def print_summary(sweep, D, Cd_water, factor, factor_source, Cd_effective,
     print("=" * 72)
 
     print()
-    print("CONFIGURATION")
+    print("CONFIG")
     print("-" * 72)
     print(f"  Injector            {inj['name']}")
     print(f"  Diameter (fixed)    {D*1e3:.4f} mm  ({D*1e6:.1f} µm)")
     print(f"  Cd_water            {Cd_water:.4f}")
-    print(f"  Correction factor   {factor:.4f}")
-    print(f"  Correction source   {factor_source}")
-    print(f"  Cd effective        {Cd_effective:.4f}  (Cd_water × factor)")
+    print(f"  Correction factor   {factor:.4f} {factor_source}")
+    print(f"  Cd_2phase           {Cd_effective:.4f}  (Cd_water × factor)")
     print(f"  P₁                  {op['P1_psi']:.0f} psi")
     print(f"  Pc design           {op['Pc_design_psi']:.0f} psi")
-    print(f"  ΔP at design        {op['P1_psi']-op['Pc_design_psi']:.0f} psi")
+    print(f"  ΔP design           {op['P1_psi']-op['Pc_design_psi']:.0f} psi")
     print(f"  N search range      [{inputs.ITERATION['N_search_min']}, "
           f"{inputs.ITERATION['N_search_max']}]")
     if target_mdot_kgs is not None:
@@ -166,7 +165,7 @@ def print_summary(sweep, D, Cd_water, factor, factor_source, Cd_effective,
 
     if current_row is not None:
         print()
-        print("CURRENT STATE")
+        print("CURRENT")
         print("-" * 72)
         print(f"  N                   {current_row['N']}")
         print(f"  A_physical          {current_row['A_physical_mm2']:.2f} mm²")
@@ -351,7 +350,7 @@ if __name__ == "__main__":
                   target, recommended, current_row)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    print("Outputs")
+    print("OUTPUTS")
     print("-" * 72)
     save_csv(sweep, os.path.join(OUTPUT_DIR, inputs.OUTPUT_FILES["iteration_csv"]))
     save_plot(sweep, target, recommended, current_row, D, Cd_effective,

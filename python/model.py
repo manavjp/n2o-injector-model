@@ -200,7 +200,7 @@ def print_summary(results, kappa_primary):
         Cd_water = inj["Cd_water"]
         Cd_2phase_ref = Cd_water * factor
         print()
-        print("Discharge Coefficient")
+        print("DISCHARGE COEFFICIENT")
         print("-" * 72)
         print(f"  Cd_water                 {Cd_water:.4f}")
         print(f"  Cd correction multiplier {factor:.4f}")
@@ -232,7 +232,7 @@ def print_summary(results, kappa_primary):
             print(f"  Note: ṁ depends on Pc")
 
     print()
-    print("OPERATING ṁ")
+    print("OPERATING M DOT")
     print("-" * 72)
     c = results["operating_summary"][kappa_primary]
     print(f"  ṁ at choke          {c['mdot_at_crit_kgs']:.4f} kg/s "
@@ -378,7 +378,7 @@ if __name__ == "__main__":
     print_summary(results, inputs.KAPPA)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    print("Outputs")
+    print("OUTPUTS")
     print("-" * 72)
     save_csv(results, os.path.join(OUTPUT_DIR, inputs.OUTPUT_FILES["csv"]))
     save_plot(results, inputs.KAPPA,
